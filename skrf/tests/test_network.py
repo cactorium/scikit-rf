@@ -441,14 +441,11 @@ class NetworkTestCase(unittest.TestCase):
         self.assertTrue(abs(a.rn[0] - 0.1159*50.) < 1.e-6, 'equivalent resistance does not match original spec')
         self.assertTrue(npy.all(abs(a.g_opt) < 1.e-6), 'calculated optimal reflection coefficient does not match original coefficients')
 
+        a = a.interpolate(a.frequency)
         b = rf.Network(f=[1, 2],
                        s=[[[0, 1], [1, 0]], [[0, 1], [1, 0]]],
                        z0=50).interpolate(a.frequency)
-        with self.assertRaises(ValueError) as context:
-            b.n
-        with self.assertRaises(ValueError) as context:
-            b.f_noise
-        self.assertEqual(str(context.exception), 'network does not have noise')
+        self.assertTrue(not npy.any(b.n))
 
         c = a ** b
         self.assertTrue(a.noisy)

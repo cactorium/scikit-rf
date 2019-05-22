@@ -377,7 +377,7 @@ class Network(object):
         self.port_names = None
 
         self.noise = None
-        self.noise_freq = None
+        self.noise_freq_raw = None
 
         if file is not None:
             # allows user to pass filename or file obj
@@ -1151,10 +1151,10 @@ class Network(object):
     @property
     def noisy(self):
       """
-      whether this network has noise
+      whether this network has noise data
       """
       try:
-        return self.noise is not None and self.noise_freq is not None
+        return self.noise is not None and self.noise_freq_raw is not None
       except:
         return False
 
@@ -1163,21 +1163,78 @@ class Network(object):
       """
       the ABCD form of the noise correlation matrix for the network
       """
+      if self.nports != 2:
+        raise ValueError('noise is not defined for networks with nports != 2')
+
+      warn_zero = False
       if not self.noisy:
-        raise ValueError('network does not have noise')
+        c_a = npy.broadcast_arrays(npy.array([[0., 0.], [0., 0.]]), self.s)[0]
+        if self.is_passive:
+          z = self.z
+          y = self.y
+          c_z = 4*K_BOLTZMANN*T0*npy.real(z)
+          c_y = 4*K_BOLTZMANN*T0*npy.real(y)
+          # no real components implies no noise, so return the zero matrix
+          if not npy.any(c_z):
+            return c_a
+          if not npy.any(c_y):
+            return c_a
+
+          for i in range(c_a.shape[0]):
+            if not npy.any(c_z[i]):
+              continue
+            if npy.isinf(z) is None:
+                # calculate the c_a matrix for each frame
+                # [c_z] = [1 -Z11; 0 -Z22][c_a][1 0; -Z11* -Z22*]
+                # so
+                # [c_a] = [1 -Z11; 0 -Z22]^-1[c_z][1 0; -Z11* -Z22*]^-1
+                # assuming Z22 != 0
+
+                # if Z22 = 0, then the equation's unsolvable, so let's spit out
+                # a warning and return a zero matrix
+                # it's zeroed above so just continue to the next index
+                if abs(c_z[i, 1, 1]) < 1e-12:
+                  if not warn_zero:
+                    warn_zero = True
+                    print('warning: could not calculate noise due to short in network')
+                  continue
+                left_inv = npy_inv(npy.array([[1 -z[i, 0, 0]], [0 -z[i, 1, 1]]]))
+                right_inv = npy_inv(npy.conj(npy.array([[1, 0], [-z[i, 1, 1], -z[i, 2, 2]]])))
+                c_a[i] = npy.matmul(npy.matmul(left_inv, c_z[i]), right_inv)
+            else:
+              if not npy.any(c_y[i]):
+                continue
+              if npy.isinf(y) is None:
+                  # there's a similar set of equations here as in the z matrix case
+                  # calculate the c_a matrix for each frame
+                  # [c_y] = [-Y11 1; -Y22 0][c_a][-Y11* -Y22*; 1 0]
+                  # [c_a] = [-Y11 1; -Y22 0]^-1[c_y][-Y11* -Y22*; 1 0]^-1
+                  # same issue with Y11 = 0 as with Z22 = 0 above
+                  if abs(c_y[i, 0, 0]) < 1e-12:
+                    if not warn_zero:
+                      warn_zero = True
+                      print('warning: could not calculate noise due to open in network')
+                    continue
+                  left_inv = npy_inv(npy.array([[-y[i, 0, 0], 1], [-y[i, 1, 1], 0]]))
+                  right_inv = npy_inv(npy.conj(npy.array([[-y[i, 0, 0], -y[i, 1, 1]], [1, 0]])))
+                  c_a[i] = npy.matmul(npy.matmul(left_inv, c_y[i]), right_inv)
+          return c_a
+        else:
+          raise ValueError('network does not have noise')
 
       noise_real = interp1d(self.noise_freq.f, self.noise.real, axis=0, kind=Network.noise_interp_kind)
       noise_imag = interp1d(self.noise_freq.f, self.noise.imag, axis=0, kind=Network.noise_interp_kind)
       return noise_real(self.frequency.f) + 1.0j * noise_imag(self.frequency.f)
 
     @property
-    def f_noise(self):
+    def noise_freq(self):
       """
       the frequency vector for the noise of the network, in Hz.
       """
+      # if it doesn't have noise data use the scattering parameter frequencies
       if not self.noisy:
-        raise ValueError('network does not have noise')
-      return self.noise_freq
+        return self.frequency
+      return self.noise_freq_raw
 
     @property
     def y_opt(self):
@@ -1507,9 +1564,9 @@ class Network(object):
 
         ntwk.name = self.name
 
-        if self.noise is not None and self.noise_freq is not None:
+        if self.noise is not None and self.noise_freq_raw is not None:
           ntwk.noise = npy.copy(self.noise)
-          ntwk.noise_freq = npy.copy(self.noise_freq)
+          ntwk.noise_freq_raw = npy.copy(self.noise_freq_raw)
 
         try:
             ntwk.port_names = copy(self.port_names)
@@ -1606,8 +1663,8 @@ class Network(object):
                 [[rn, (nf_min-1.)/2. - rn*npy.conj(y_opt)],
                 [(nf_min-1.)/2. - rn*y_opt, npy.square(npy.absolute(y_opt)) * rn]]
               ).swapaxes(0, 2).swapaxes(1, 2)
-          self.noise_freq = Frequency.from_f(noise_freq, unit='hz')
-          self.noise_freq.unit = touchstoneFile.frequency_unit
+          self.noise_freq_raw = Frequency.from_f(noise_freq, unit='hz')
+          self.noise_freq_raw.unit = touchstoneFile.frequency_unit
 
         if self.name is None:
             try:
@@ -2109,11 +2166,11 @@ class Network(object):
 
         # interpolate noise data too
         if self.noisy:
-          f_noise = self.noise_freq.f
-          f_noise_new = new_frequency.f
-          interp_noise_re = f_interp(f_noise, self.noise.real, axis=0, **kwargs)
-          interp_noise_im = f_interp(f_noise, self.noise.imag, axis=0, **kwargs)
-          noise_new = interp_noise_re(f_noise_new) + 1j * interp_noise_im(f_noise_new)
+          noise_freq = self.noise_freq.f
+          noise_freq_new = new_frequency.f
+          interp_noise_re = f_interp(noise_freq, self.noise.real, axis=0, **kwargs)
+          interp_noise_im = f_interp(noise_freq, self.noise.imag, axis=0, **kwargs)
+          noise_new = interp_noise_re(noise_freq_new) + 1j * interp_noise_im(noise_freq_new)
 
         if return_array:
             return x_new
@@ -2121,7 +2178,7 @@ class Network(object):
             result.__setattr__(basis, x_new)
             if self.noisy:
               result.noise = noise_new
-              result.noise_freq = new_frequency
+              result.noise_freq_raw = new_frequency
         return result
 
     def interpolate_self_npoints(self, npoints, **kwargs):
@@ -2195,7 +2252,7 @@ class Network(object):
         ntwk = self.interpolate(freq_or_n, **kwargs)
         self.frequency, self.s, self.z0 = ntwk.frequency, ntwk.s, ntwk.z0
         if self.noisy:
-          self.noise, self.noise_freq = ntwk.noise, ntwk.noise_freq
+          self.noise, self.noise_freq_raw = ntwk.noise, ntwk.noise_freq_raw
 
     ##convenience
     resample = interpolate_self
@@ -3250,18 +3307,24 @@ def connect(ntwkA, k, ntwkB, l, num=1):
 
     if num == 1 and ntwkA.nports == 2 and ntwkB.nports == 2 and either_are_noisy:
       if ntwkA.noise_freq is not None and ntwkB.noise_freq is not None and ntwkA.noise_freq != ntwkB.noise_freq:
+          print(ntwkA.frequency)
+          print(ntwkB.frequency)
+          print(ntwkA.noise_freq)
+          print(ntwkB.noise_freq)
           raise IndexError('Networks must have same noise frequency. See `Network.interpolate`')
-      cA = ntwkA.noise
-      cB = ntwkB.noise
 
-      noise_freq = ntwkA.noise_freq
-      if noise_freq is None:
-        noise_freq = ntwkB.noise_freq
+      try:
+        cA = ntwkA.n
+        noise_freq = ntwkA.noise_freq
+      except:
+        cA = npy.broadcast_arrays(npy.array([[0., 0.], [0., 0.]]), ntwkB.n)[0]
 
-      if cA is None:
-        cA = npy.broadcast_arrays(npy.array([[0., 0.], [0., 0.]]), ntwkB.noise)[0]
-      if cB is None:
-        cB = npy.broadcast_arrays(npy.array([[0., 0.], [0., 0.]]), ntwkA.noise)[0]
+      try:
+        cB = ntwkB.n
+        if noise_freq is None:
+          noise_freq = ntwkB.noise_freq
+      except:
+        cB = npy.broadcast_arrays(npy.array([[0., 0.], [0., 0.]]), ntwkA.n)[0]
 
       if k == 0:
         # if we're connecting to the "input" port of ntwkA, recalculate the equivalent noise of ntwkA,
@@ -3284,7 +3347,7 @@ def connect(ntwkA, k, ntwkB, l, num=1):
       a_H = npy.conj(a.transpose(0, 2, 1))
       cC = npy.matmul(a, npy.matmul(cB, a_H)) + cA
       ntwkC.noise = cC
-      ntwkC.noise_freq = noise_freq
+      ntwkC.noise_freq_raw = noise_freq
 
     return ntwkC
 
