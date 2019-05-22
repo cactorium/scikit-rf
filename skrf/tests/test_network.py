@@ -445,7 +445,7 @@ class NetworkTestCase(unittest.TestCase):
         b = rf.Network(f=[1, 2],
                        s=[[[0, 1], [1, 0]], [[0, 1], [1, 0]]],
                        z0=50).interpolate(a.frequency)
-        self.assertTrue(not npy.any(b.n))
+        self.assertTrue(not npy.any(b.n > 1e-30))
 
         c = a ** b
         self.assertTrue(a.noisy)
@@ -474,6 +474,10 @@ class NetworkTestCase(unittest.TestCase):
         expected_zopt = 50 - 2j*npy.pi*1e+9*1e-9
         self.assertTrue(abs(f.z_opt[0] - expected_zopt) < 1.e-6, 'optimal resistance was not 50 ohms - inductor')
 
+        # test out an attenuator
+        attenuator = tem.resistor(16.614) ** tem.shunt(tem.resistor(66.913) ** tem.short()) ** tem.resistor(16.614)
+        #print(attenuator.n)
+        self.assertTrue(npy.all(npy.abs(attenuator.nfmin - 3.981) < 1.e-6), 'noise figure of attenuator incorrect')
 
         return
 

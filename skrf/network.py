@@ -1168,7 +1168,7 @@ class Network(object):
 
       warn_zero = False
       if not self.noisy:
-        c_a = npy.broadcast_arrays(npy.array([[0., 0.], [0., 0.]]), self.s)[0]
+        c_a = npy.broadcast_arrays(npy.array([[0.j, 0.j], [0.j, 0.j]]), self.s)[0]
         if self.is_passive:
           z = self.z
           y = self.y
@@ -1183,7 +1183,7 @@ class Network(object):
           for i in range(c_a.shape[0]):
             if not npy.any(c_z[i]):
               continue
-            if npy.isinf(z) is None:
+            if not npy.isinf(z).any():
                 # calculate the c_a matrix for each frame
                 # [c_z] = [1 -Z11; 0 -Z22][c_a][1 0; -Z11* -Z22*]
                 # so
@@ -1193,24 +1193,24 @@ class Network(object):
                 # if Z22 = 0, then the equation's unsolvable, so let's spit out
                 # a warning and return a zero matrix
                 # it's zeroed above so just continue to the next index
-                if abs(c_z[i, 1, 1]) < 1e-12:
+                if abs(c_z[i, 1, 1]) < 1e-50:
                   if not warn_zero:
                     warn_zero = True
                     print('warning: could not calculate noise due to short in network')
                   continue
-                left_inv = npy_inv(npy.array([[1 -z[i, 0, 0]], [0 -z[i, 1, 1]]]))
-                right_inv = npy_inv(npy.conj(npy.array([[1, 0], [-z[i, 1, 1], -z[i, 2, 2]]])))
+                left_inv = npy_inv(npy.array([[1, -z[i, 0, 0]], [0, -z[i, 1, 1]]]))
+                right_inv = npy_inv(npy.conj(npy.array([[1, 0], [-z[i, 0, 0], -z[i, 1, 1]]])))
                 c_a[i] = npy.matmul(npy.matmul(left_inv, c_z[i]), right_inv)
             else:
               if not npy.any(c_y[i]):
                 continue
-              if npy.isinf(y) is None:
+              if not npy.isinf(y).any():
                   # there's a similar set of equations here as in the z matrix case
                   # calculate the c_a matrix for each frame
                   # [c_y] = [-Y11 1; -Y22 0][c_a][-Y11* -Y22*; 1 0]
                   # [c_a] = [-Y11 1; -Y22 0]^-1[c_y][-Y11* -Y22*; 1 0]^-1
                   # same issue with Y11 = 0 as with Z22 = 0 above
-                  if abs(c_y[i, 0, 0]) < 1e-12:
+                  if abs(c_y[i, 0, 0]) < 1e-50:
                     if not warn_zero:
                       warn_zero = True
                       print('warning: could not calculate noise due to open in network')
@@ -3307,10 +3307,6 @@ def connect(ntwkA, k, ntwkB, l, num=1):
 
     if num == 1 and ntwkA.nports == 2 and ntwkB.nports == 2 and either_are_noisy:
       if ntwkA.noise_freq is not None and ntwkB.noise_freq is not None and ntwkA.noise_freq != ntwkB.noise_freq:
-          print(ntwkA.frequency)
-          print(ntwkB.frequency)
-          print(ntwkA.noise_freq)
-          print(ntwkB.noise_freq)
           raise IndexError('Networks must have same noise frequency. See `Network.interpolate`')
 
       try:
